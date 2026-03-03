@@ -5,15 +5,15 @@ on:
   workflow_dispatch:
     inputs:
       duckdb_version:
-        description: 'DuckDB version tag'
-        default: 'v1.4.4'
+        description: 'DuckDB version (branch/tag/SHA)'
+        default: 'main'
       create_release:
         description: 'Create a GitHub release'
         type: boolean
         default: false
 
 env:
-  DUCKDB_VERSION: ${{ inputs.duckdb_version || 'v1.4.4' }}
+  DUCKDB_VERSION: ${{ inputs.duckdb_version || 'main' }}
   VCPKG_COMMIT: 'ce613c41372b23b1f51333815feb3edd87ef8a8b'
 
 jobs:
@@ -56,6 +56,13 @@ jobs:
           path: duckdb-mysql-sharding
           submodules: recursive
 
+      - name: Apply shell library patch
+        run: |
+          cd duckdb
+          git apply ../patches/shell_lib.patch
+          echo "=== Patch applied ==="
+          ls -la tools/shell/shell_lib.cpp tools/shell/include/shell_lib.h
+
       - name: Setup (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ninja-build
@@ -75,7 +82,7 @@ jobs:
           git checkout ${{ env.VCPKG_COMMIT }}
           ./bootstrap-vcpkg.sh
 
-      - name: Build DuckDB
+      - name: Build DuckDB + shell library
         env:
           GEN: ninja
           VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg-repo/scripts/buildsystems/vcpkg.cmake
@@ -91,6 +98,7 @@ jobs:
           COMMON_FLAGS="${COMMON_FLAGS} -DVCPKG_TARGET_TRIPLET='${VCPKG_TARGET_TRIPLET}'"
           COMMON_FLAGS="${COMMON_FLAGS} -DVCPKG_MANIFEST_DIR='${WORKSPACE}'"
           COMMON_FLAGS="${COMMON_FLAGS} -DOVERRIDE_GIT_DESCRIBE='${{ env.DUCKDB_VERSION }}'"
+          COMMON_FLAGS="${COMMON_FLAGS} -DBUILD_SHELL_LIB=1"
 
           if [ -n "${OSX_BUILD_ARCH}" ]; then
             COMMON_FLAGS="${COMMON_FLAGS} -DOSX_BUILD_ARCH=${OSX_BUILD_ARCH}"
@@ -104,53 +112,35 @@ jobs:
             -S duckdb -B duckdb/build/extension_configuration
           cmake --build duckdb/build/extension_configuration
 
-          # Step 2: Build DuckDB with merged manifest
-          echo "=== Step 2: Building DuckDB ==="
+          # Step 2: Build DuckDB with merged manifest + shell library
+          echo "=== Step 2: Building DuckDB + shell library ==="
           cmake ${COMMON_FLAGS} \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_SHELL=0 \
+            -DBUILD_SHELL=1 \
             -DBUILD_UNITTESTS=0 \
             -DENABLE_UBSAN=0 \
             -S duckdb -B duckdb/build/release
           cmake --build duckdb/build/release --config Release -- -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
-      - name: Build shell library
-        env:
-          OSX_BUILD_ARCH: ${{ matrix.osx_build_arch }}
-        run: |
-          BUILD_DIR="duckdb/build/release"
-
-          INCLUDES="-I duckdb/src/include"
-          INCLUDES="${INCLUDES} -I ${BUILD_DIR}/codegen/include"
-
-          CXX_FLAGS="-std=c++11 -O3 -DNDEBUG -DDUCKDB -fPIC"
-
-          if [ -n "${OSX_BUILD_ARCH}" ]; then
-            CXX_FLAGS="${CXX_FLAGS} -arch ${OSX_BUILD_ARCH}"
-          fi
-
-          c++ ${CXX_FLAGS} ${INCLUDES} -c duckdb_shell_lib.cpp -o duckdb_shell_lib.o
-          ar rcs libduckdb_shell.a duckdb_shell_lib.o
-
-          echo "=== Shell library built ==="
-          ls -lh libduckdb_shell.a
-
       - name: Merge into single static library
         run: |
           mkdir -p merge_tmp dist
 
-          # Collect all .a files (excluding debug vcpkg libs)
+          # Collect all .a files
           find duckdb/build/release/src -name "libduckdb_static.a" -exec cp {} merge_tmp/ \;
           find duckdb/build/release/extension -name "lib*_extension.a" -exec cp {} merge_tmp/ \;
           find duckdb/build/release/third_party -name "libduckdb_*.a" -exec cp {} merge_tmp/ \;
+
+          # Shell library (built by CMake target duckdb_shell_lib)
+          find duckdb/build/release/tools/shell -name "libduckdb_shell_lib.a" -exec cp {} merge_tmp/ \;
+
+          # Linenoise (needed by shell)
+          find duckdb/build/release/tools/shell -name "lib*linenoise*.a" -exec cp {} merge_tmp/ \;
 
           VCPKG_LIB="duckdb/build/release/vcpkg_installed/${{ matrix.vcpkg_triplet }}/lib"
           if [ -d "${VCPKG_LIB}" ]; then
             cp "${VCPKG_LIB}"/*.a merge_tmp/ 2>/dev/null || true
           fi
-
-          # Add shell library
-          cp libduckdb_shell.a merge_tmp/
 
           echo "=== Libraries to merge ==="
           ls -lhS merge_tmp/*.a
@@ -159,7 +149,6 @@ jobs:
           if [ "${{ runner.os }}" = "macOS" ]; then
             libtool -static -o dist/libduckdb_bundle.a merge_tmp/*.a
           else
-            # Use ar MRI script for Linux (handles duplicate object names)
             {
               echo "CREATE dist/libduckdb_bundle.a"
               for f in merge_tmp/*.a; do
@@ -172,7 +161,7 @@ jobs:
 
           # Copy headers
           cp duckdb/src/include/duckdb.h dist/
-          cp duckdb_shell_lib.h dist/
+          cp duckdb/tools/shell/include/shell_lib.h dist/duckdb_shell_lib.h
 
           echo ""
           echo "=== Bundle result ==="
@@ -204,7 +193,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.duckdb_version || 'v1.4.4' }}
-          name: DuckDB ${{ inputs.duckdb_version || 'v1.4.4' }} with Extensions
+          tag_name: ${{ inputs.duckdb_version || 'main' }}
+          name: DuckDB ${{ inputs.duckdb_version || 'main' }} with Extensions
           files: "*.zip"
           generate_release_notes: true

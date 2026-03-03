@@ -1,0 +1,164 @@
+diff --git a/tools/shell/include/shell_lib.h b/tools/shell/include/shell_lib.h
+new file mode 100644
+index 0000000000..83cfdc1925
+--- /dev/null
++++ b/tools/shell/include/shell_lib.h
+@@ -0,0 +1,26 @@
++#ifndef DUCKDB_SHELL_LIB_H
++#define DUCKDB_SHELL_LIB_H
++
++#include "duckdb.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/*
++ * Start the full interactive DuckDB shell on an existing database instance.
++ *
++ * This provides the complete official shell experience: duckbox rendering,
++ * linenoise line editing, syntax highlighting, autocomplete, command history,
++ * and all meta-commands (.mode, .timer, .tables, etc.)
++ *
++ * The database is NOT closed when the shell exits.
++ * Returns 0 on success.
++ */
++int duckdb_start_shell(duckdb_database database);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/tools/shell/shell_lib.cpp b/tools/shell/shell_lib.cpp
+new file mode 100644
+index 0000000000..634a2ecb39
+--- /dev/null
++++ b/tools/shell/shell_lib.cpp
+@@ -0,0 +1,126 @@
++#include "shell_lib.h"
++#include "shell_state.hpp"
++#include "duckdb.hpp"
++#include "duckdb/main/capi/capi_internal.hpp"
++
++#ifdef HAVE_LINENOISE
++#include "linenoise.h"
++#endif
++
++#ifdef SHELL_INLINE_AUTOCOMPLETE
++#include "autocomplete_extension.hpp"
++#endif
++#include "shell_extension.hpp"
++#include "shell_highlight.hpp"
++#include "shell_progress_bar.hpp"
++
++#include <csignal>
++#include <cstdio>
++
++using namespace duckdb;
++using namespace duckdb_shell;
++
++static duckdb::unique_ptr<duckdb::ProgressBarDisplay> ShellLibCreateProgressBar() {
++	return duckdb::make_uniq<ShellProgressBarDisplay>();
++}
++
++extern "C" {
++
++int duckdb_start_shell(duckdb_database database) {
++	if (!database) {
++		fprintf(stderr, "Error: NULL database handle\n");
++		return 1;
++	}
++
++	auto *wrapper = reinterpret_cast<DatabaseWrapper *>(database);
++	auto &duckdb_instance = *wrapper->database;
++
++	auto &data = ShellState::Get();
++
++	data.stdin_is_interactive = isatty(0);
++	data.stdout_is_console = isatty(1);
++	data.stderr_is_console = isatty(2);
++
++	data.Initialize();
++
++	// Set the external database and connection without creating a new one.
++	// We use reset() with the raw pointer but must release() before cleanup
++	// to avoid destroying the caller's database.
++	data.db.reset(&duckdb_instance);
++	data.conn = make_uniq<Connection>(duckdb_instance);
++
++	auto &client_config = ClientConfig::GetConfig(*data.conn->context);
++	client_config.display_create_func = ShellLibCreateProgressBar;
++
++#ifdef SHELL_INLINE_AUTOCOMPLETE
++	duckdb_instance.LoadStaticExtension<AutocompleteExtension>();
++#endif
++	duckdb_instance.LoadStaticExtension<ShellExtension>();
++
++	if (data.stdout_is_console) {
++		data.conn->Query("PRAGMA enable_progress_bar");
++		data.conn->Query("PRAGMA enable_print_progress_bar");
++	}
++
++	data.out = stdout;
++
++	int rc = 0;
++
++	if (data.stdin_is_interactive) {
++		ShellHighlight highlight(data);
++
++		auto startup_version = StringUtil::Format(
++		    "DuckDB %s (%s)\n", DuckDB::LibraryVersion(), DuckDB::ReleaseCodename());
++		highlight.PrintText(startup_version, PrintOutput::STDOUT, HighlightElementType::STARTUP_VERSION);
++		highlight.PrintText("Enter \".help\" for usage hints.\n", PrintOutput::STDOUT,
++		                    HighlightElementType::STARTUP_TEXT);
++
++		const char *zHistory = getenv("DUCKDB_HISTORY");
++		std::string zHome;
++		if (!zHistory) {
++			const char *home = getenv("HOME");
++			if (home) {
++				zHome = std::string(home) + "/.duckdb_history";
++				zHistory = zHome.c_str();
++			}
++		}
++
++		if (zHistory) {
++			data.ShellLoadHistory(zHistory);
++		}
++
++#ifdef HAVE_LINENOISE
++		if (data.rl_version == ReadLineVersion::LINENOISE) {
++			linenoiseSetCompletionCallback(nullptr);
++		}
++#endif
++
++		data.DetectDarkLightMode();
++
++		data.in = nullptr;
++		rc = data.ProcessInput(InputMode::STANDARD);
++
++		if (zHistory) {
++			data.ShellSetHistoryMaxLength(2000);
++			data.ShellSaveHistory(zHistory);
++		}
++	} else {
++		data.in = stdin;
++		rc = data.ProcessInput(InputMode::STANDARD);
++	}
++
++	data.SetTableName(nullptr);
++	data.last_result.reset();
++	data.ResetOutput();
++	data.doXdgOpen = 0;
++	data.ClearTempFile();
++
++	// Release the DuckDB pointer to prevent ShellState from destroying
++	// the caller's database instance.
++	data.conn.reset();
++	data.db.release();
++
++	return rc;
++}
++
++} // extern "C"

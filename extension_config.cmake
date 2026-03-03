@@ -5,7 +5,7 @@
 
 duckdb_extension_load(httpfs
     GIT_URL https://github.com/duckdb/duckdb-httpfs
-    GIT_TAG v1.4-andium
+    GIT_TAG main
 )
 
 duckdb_extension_load(ui

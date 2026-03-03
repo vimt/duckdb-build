@@ -1,6 +1,5 @@
+*.o
+*.a
 build/
 dist/
-duckdb/
-duckdb-mysql-sharding/
-vcpkg-repo/
-*.zip
+merge_tmp/
