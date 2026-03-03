@@ -162,10 +162,10 @@ index 0000000000..83cfdc1925
 +#endif
 diff --git a/tools/shell/shell_lib.cpp b/tools/shell/shell_lib.cpp
 new file mode 100644
-index 0000000000..634a2ecb39
+index 0000000000..86b6833bbe
 --- /dev/null
 +++ b/tools/shell/shell_lib.cpp
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,136 @@
 +#include "shell_lib.h"
 +#include "shell_state.hpp"
 +#include "duckdb.hpp"
@@ -184,6 +184,16 @@ index 0000000000..634a2ecb39
 +
 +#include <csignal>
 +#include <cstdio>
++
++#ifdef _WIN32
++#include <io.h>
++#define ISATTY _isatty
++#define FILENO _fileno
++#else
++#include <unistd.h>
++#define ISATTY isatty
++#define FILENO fileno
++#endif
 +
 +using namespace duckdb;
 +using namespace duckdb_shell;
@@ -205,9 +215,9 @@ index 0000000000..634a2ecb39
 +
 +	auto &data = ShellState::Get();
 +
-+	data.stdin_is_interactive = isatty(0);
-+	data.stdout_is_console = isatty(1);
-+	data.stderr_is_console = isatty(2);
++	data.stdin_is_interactive = ISATTY(FILENO(stdin));
++	data.stdout_is_console = ISATTY(FILENO(stdout));
++	data.stderr_is_console = ISATTY(FILENO(stderr));
 +
 +	data.Initialize();
 +
