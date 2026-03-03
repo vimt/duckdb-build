@@ -1,0 +1,165 @@
+name: Build DuckDB Static Libraries
+
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      duckdb_version:
+        description: 'DuckDB version tag'
+        default: 'v1.4.4'
+      create_release:
+        description: 'Create a GitHub release'
+        type: boolean
+        default: false
+
+env:
+  DUCKDB_VERSION: ${{ inputs.duckdb_version || 'v1.4.4' }}
+  VCPKG_COMMIT: 'ce613c41372b23b1f51333815feb3edd87ef8a8b'
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-amd64
+            os: ubuntu-24.04
+            vcpkg_triplet: x64-linux-release
+          - platform: linux-arm64
+            os: ubuntu-24.04-arm
+            vcpkg_triplet: arm64-linux-release
+          - platform: darwin-arm64
+            os: macos-latest
+            osx_build_arch: arm64
+            vcpkg_triplet: arm64-osx-release
+          - platform: darwin-amd64
+            os: macos-latest
+            osx_build_arch: x86_64
+            vcpkg_triplet: x64-osx-release
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout DuckDB
+        uses: actions/checkout@v4
+        with:
+          repository: duckdb/duckdb
+          ref: ${{ env.DUCKDB_VERSION }}
+          path: duckdb
+
+      - name: Checkout duckdb-mysql-sharding
+        uses: actions/checkout@v4
+        with:
+          repository: vimt/duckdb-mysql-sharding
+          path: duckdb-mysql-sharding
+          submodules: recursive
+
+      - name: Setup (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Setup (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git vcpkg-repo
+          cd vcpkg-repo
+          git checkout ${{ env.VCPKG_COMMIT }}
+          ./bootstrap-vcpkg.sh
+
+      - name: Build DuckDB
+        env:
+          GEN: ninja
+          VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg-repo/scripts/buildsystems/vcpkg.cmake
+          VCPKG_TARGET_TRIPLET: ${{ matrix.vcpkg_triplet }}
+          OSX_BUILD_ARCH: ${{ matrix.osx_build_arch }}
+        run: |
+          cd duckdb
+          mkdir -p build/release
+
+          CMAKE_VARS="-DCMAKE_BUILD_TYPE=Release"
+          CMAKE_VARS="${CMAKE_VARS} -G Ninja"
+          CMAKE_VARS="${CMAKE_VARS} -DDUCKDB_EXTENSION_CONFIGS='${{ github.workspace }}/extension_config.cmake'"
+          CMAKE_VARS="${CMAKE_VARS} -DVCPKG_BUILD=1"
+          CMAKE_VARS="${CMAKE_VARS} -DCMAKE_TOOLCHAIN_FILE='${VCPKG_TOOLCHAIN_PATH}'"
+          CMAKE_VARS="${CMAKE_VARS} -DVCPKG_TARGET_TRIPLET='${VCPKG_TARGET_TRIPLET}'"
+          CMAKE_VARS="${CMAKE_VARS} -DVCPKG_MANIFEST_DIR='${{ github.workspace }}/duckdb-mysql-sharding'"
+          CMAKE_VARS="${CMAKE_VARS} -DOVERRIDE_GIT_DESCRIBE='${DUCKDB_VERSION}'"
+          CMAKE_VARS="${CMAKE_VARS} -DBUILD_SHELL=0"
+          CMAKE_VARS="${CMAKE_VARS} -DBUILD_UNITTESTS=0"
+          CMAKE_VARS="${CMAKE_VARS} -DENABLE_UBSAN=0"
+          CMAKE_VARS="${CMAKE_VARS} -DBUILD_EXTENSIONS=''";
+
+          if [ -n "${OSX_BUILD_ARCH}" ]; then
+            CMAKE_VARS="${CMAKE_VARS} -DOSX_BUILD_ARCH=${OSX_BUILD_ARCH}"
+          fi
+
+          cmake ${CMAKE_VARS} -S . -B build/release
+          cmake --build build/release --config Release -- -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+
+      - name: Collect artifacts
+        run: |
+          DIST="dist/${{ matrix.platform }}"
+          mkdir -p "${DIST}"
+
+          # DuckDB static library
+          cp duckdb/build/release/src/libduckdb_static.a "${DIST}/"
+
+          # Extension libraries
+          find duckdb/build/release/extension -name "lib*_extension.a" -exec cp {} "${DIST}/" \;
+
+          # Third-party libraries
+          find duckdb/build/release/third_party -name "libduckdb_*.a" -exec cp {} "${DIST}/" \;
+
+          # vcpkg libraries (libmariadb, openssl, etc.)
+          VCPKG_LIB="duckdb/build/release/vcpkg_installed/${{ matrix.vcpkg_triplet }}/lib"
+          if [ -d "${VCPKG_LIB}" ]; then
+            cp "${VCPKG_LIB}"/*.a "${DIST}/" 2>/dev/null || true
+          fi
+
+          # Header
+          cp duckdb/src/include/duckdb.h "${DIST}/"
+
+          echo "=== Collected libraries ==="
+          ls -lhS "${DIST}"/*.a
+          echo ""
+          echo "=== Header ==="
+          ls -lh "${DIST}"/duckdb.h
+
+      - name: Create zip
+        run: |
+          cd dist/${{ matrix.platform }}
+          zip -r ../../duckdb-${{ matrix.platform }}.zip .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: duckdb-${{ matrix.platform }}
+          path: duckdb-${{ matrix.platform }}.zip
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ inputs.create_release == true }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.duckdb_version || 'v1.4.4' }}
+          name: DuckDB ${{ inputs.duckdb_version || 'v1.4.4' }} with Extensions
+          files: artifacts/**/*.zip
+          generate_release_notes: true
