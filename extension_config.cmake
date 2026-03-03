@@ -3,7 +3,10 @@
 # Core extensions (autocomplete, core_functions, icu, json, parquet, jemalloc,
 # tpch, tpcds) are included by DuckDB by default.
 
-duckdb_extension_load(httpfs)
+duckdb_extension_load(httpfs
+    GIT_URL https://github.com/duckdb/duckdb-httpfs
+    GIT_TAG v1.4-andium
+)
 
 duckdb_extension_load(ui
     GIT_URL https://github.com/duckdb/duckdb-ui

@@ -1,0 +1,12 @@
+{
+  "dependencies": [
+    "libmariadb",
+    "openssl",
+    "curl"
+  ],
+  "vcpkg-configuration": {
+    "overlay-ports": [
+      "./duckdb-mysql-sharding/vcpkg_ports"
+    ]
+  }
+}

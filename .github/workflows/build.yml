@@ -82,26 +82,37 @@ jobs:
           VCPKG_TARGET_TRIPLET: ${{ matrix.vcpkg_triplet }}
           OSX_BUILD_ARCH: ${{ matrix.osx_build_arch }}
         run: |
-          cd duckdb
-          mkdir -p build/release
+          WORKSPACE="${{ github.workspace }}"
 
-          CMAKE_VARS="-DCMAKE_BUILD_TYPE=Release"
-          CMAKE_VARS="${CMAKE_VARS} -G Ninja"
-          CMAKE_VARS="${CMAKE_VARS} -DDUCKDB_EXTENSION_CONFIGS='${{ github.workspace }}/extension_config.cmake'"
-          CMAKE_VARS="${CMAKE_VARS} -DVCPKG_BUILD=1"
-          CMAKE_VARS="${CMAKE_VARS} -DCMAKE_TOOLCHAIN_FILE='${VCPKG_TOOLCHAIN_PATH}'"
-          CMAKE_VARS="${CMAKE_VARS} -DVCPKG_TARGET_TRIPLET='${VCPKG_TARGET_TRIPLET}'"
-          CMAKE_VARS="${CMAKE_VARS} -DOVERRIDE_GIT_DESCRIBE='${{ env.DUCKDB_VERSION }}'"
-          CMAKE_VARS="${CMAKE_VARS} -DBUILD_SHELL=0"
-          CMAKE_VARS="${CMAKE_VARS} -DBUILD_UNITTESTS=0"
-          CMAKE_VARS="${CMAKE_VARS} -DENABLE_UBSAN=0"
+          COMMON_FLAGS="-G Ninja"
+          COMMON_FLAGS="${COMMON_FLAGS} -DDUCKDB_EXTENSION_CONFIGS='${WORKSPACE}/extension_config.cmake'"
+          COMMON_FLAGS="${COMMON_FLAGS} -DVCPKG_BUILD=1"
+          COMMON_FLAGS="${COMMON_FLAGS} -DCMAKE_TOOLCHAIN_FILE='${VCPKG_TOOLCHAIN_PATH}'"
+          COMMON_FLAGS="${COMMON_FLAGS} -DVCPKG_TARGET_TRIPLET='${VCPKG_TARGET_TRIPLET}'"
+          COMMON_FLAGS="${COMMON_FLAGS} -DVCPKG_MANIFEST_DIR='${WORKSPACE}'"
+          COMMON_FLAGS="${COMMON_FLAGS} -DOVERRIDE_GIT_DESCRIBE='${{ env.DUCKDB_VERSION }}'"
 
           if [ -n "${OSX_BUILD_ARCH}" ]; then
-            CMAKE_VARS="${CMAKE_VARS} -DOSX_BUILD_ARCH=${OSX_BUILD_ARCH}"
+            COMMON_FLAGS="${COMMON_FLAGS} -DOSX_BUILD_ARCH=${OSX_BUILD_ARCH}"
           fi
 
-          cmake ${CMAKE_VARS} -S . -B build/release
-          cmake --build build/release --config Release -- -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+          # Step 1: Extension config build to merge vcpkg manifests
+          echo "=== Step 1: Merging vcpkg manifests ==="
+          cmake ${COMMON_FLAGS} \
+            -DEXTENSION_CONFIG_BUILD=TRUE \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -S duckdb -B duckdb/build/extension_configuration
+          cmake --build duckdb/build/extension_configuration
+
+          # Step 2: Build DuckDB with merged manifest
+          echo "=== Step 2: Building DuckDB ==="
+          cmake ${COMMON_FLAGS} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHELL=0 \
+            -DBUILD_UNITTESTS=0 \
+            -DENABLE_UBSAN=0 \
+            -S duckdb -B duckdb/build/release
+          cmake --build duckdb/build/release --config Release -- -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
       - name: Merge into single static library
         run: |
