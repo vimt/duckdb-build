@@ -114,6 +114,27 @@ jobs:
             -S duckdb -B duckdb/build/release
           cmake --build duckdb/build/release --config Release -- -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
+      - name: Build shell library
+        env:
+          OSX_BUILD_ARCH: ${{ matrix.osx_build_arch }}
+        run: |
+          BUILD_DIR="duckdb/build/release"
+
+          INCLUDES="-I duckdb/src/include"
+          INCLUDES="${INCLUDES} -I ${BUILD_DIR}/codegen/include"
+
+          CXX_FLAGS="-std=c++11 -O3 -DNDEBUG -DDUCKDB -fPIC"
+
+          if [ -n "${OSX_BUILD_ARCH}" ]; then
+            CXX_FLAGS="${CXX_FLAGS} -arch ${OSX_BUILD_ARCH}"
+          fi
+
+          c++ ${CXX_FLAGS} ${INCLUDES} -c duckdb_shell_lib.cpp -o duckdb_shell_lib.o
+          ar rcs libduckdb_shell.a duckdb_shell_lib.o
+
+          echo "=== Shell library built ==="
+          ls -lh libduckdb_shell.a
+
       - name: Merge into single static library
         run: |
           mkdir -p merge_tmp dist
@@ -127,6 +148,9 @@ jobs:
           if [ -d "${VCPKG_LIB}" ]; then
             cp "${VCPKG_LIB}"/*.a merge_tmp/ 2>/dev/null || true
           fi
+
+          # Add shell library
+          cp libduckdb_shell.a merge_tmp/
 
           echo "=== Libraries to merge ==="
           ls -lhS merge_tmp/*.a
@@ -146,8 +170,9 @@ jobs:
             } | ar -M
           fi
 
-          # Copy header
+          # Copy headers
           cp duckdb/src/include/duckdb.h dist/
+          cp duckdb_shell_lib.h dist/
 
           echo ""
           echo "=== Bundle result ==="
