@@ -1,32 +1,42 @@
 # duckdb-build
 
-Build DuckDB static libraries with custom extensions for use with [duckdb-go-bindings](https://github.com/duckdb/duckdb-go-bindings).
+Build DuckDB as a single static library (`libduckdb_bundle.a`) with custom extensions baked in.
 
 ## Included Extensions
 
-**Core** (built-in by DuckDB):
-- autocomplete, core_functions, icu, json, parquet, jemalloc, tpch, tpcds
-
-**Custom**:
-- [mysql_sharding](https://github.com/vimt/duckdb-mysql-sharding) - MySQL sharding extension with multi-host support
+| Extension | Source |
+|-----------|--------|
+| autocomplete, core_functions, icu, json, parquet, jemalloc, tpch, tpcds | DuckDB core |
+| httpfs | DuckDB core |
+| ui | [duckdb/duckdb-ui](https://github.com/duckdb/duckdb-ui) |
+| mysql_sharding | [vimt/duckdb-mysql-sharding](https://github.com/vimt/duckdb-mysql-sharding) |
 
 ## Build Platforms
 
-| Platform | Architecture |
-|----------|-------------|
-| linux-amd64 | x86_64 glibc |
-| linux-arm64 | aarch64 glibc |
-| darwin-arm64 | Apple Silicon |
-| darwin-amd64 | Intel Mac |
+| Platform | Runner |
+|----------|--------|
+| linux-amd64 | ubuntu-24.04 |
+| linux-arm64 | ubuntu-24.04-arm |
+| darwin-arm64 | macos-latest (Apple Silicon) |
+| darwin-amd64 | macos-latest (cross-compile) |
+
+## Output
+
+Each platform produces a zip containing:
+- `libduckdb_bundle.a` — single static library with DuckDB + all extensions + all dependencies
+- `duckdb.h` — C API header
 
 ## Usage
 
-### GitHub Actions
+### Trigger Build
 
-Push to trigger a build, or use **Actions → Run workflow** to build manually.
+- **Auto**: push to main
+- **Manual**: Actions → Run workflow (can specify `duckdb_version`, enable `create_release`)
 
-Set `create_release: true` to create a GitHub release with downloadable zip files.
+### Use with duckdb-go-bindings
 
-### Using with Go
-
-Replace the `.a` files in your local `duckdb-go-bindings/lib/<platform>/` directory with the ones from the build artifacts, and update the `prebuilt.go` CGO LDFLAGS to include the additional libraries.
+1. Download the zip for your platform from Actions artifacts or Releases
+2. Replace files in `duckdb-go-bindings/lib/<platform>/`:
+   - Remove all `*.a` files
+   - Copy `libduckdb_bundle.a` and `duckdb.h` into the directory
+3. The modified `prebuilt.go` links only `-lduckdb_bundle`
