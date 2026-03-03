@@ -1,3 +1,133 @@
+diff --git a/tools/shell/CMakeLists.txt b/tools/shell/CMakeLists.txt
+index 9dbf16cb49..b869a46e24 100644
+--- a/tools/shell/CMakeLists.txt
++++ b/tools/shell/CMakeLists.txt
+@@ -30,61 +30,76 @@ set(SHELL_SOURCES
+     shell_render_table_metadata.cpp
+     shell_windows.cpp)
+ 
+-add_executable(shell ${SHELL_SOURCES})
++if(NOT BUILD_SHELL_LIB_ONLY)
++  add_executable(shell ${SHELL_SOURCES})
+ 
+-target_link_libraries(shell duckdb_static ${DUCKDB_EXTRA_LINK_FLAGS})
+-link_threads(shell "")
+-if(STATIC_LIBCPP)
+-  message("Statically linking CLI")
+-  target_link_libraries(shell -static-libstdc++ -static-libgcc)
+-endif()
++  target_link_libraries(shell duckdb_static ${DUCKDB_EXTRA_LINK_FLAGS})
++  link_threads(shell "")
++  if(STATIC_LIBCPP)
++    message("Statically linking CLI")
++    target_link_libraries(shell -static-libstdc++ -static-libgcc)
++  endif()
+ 
+-link_extension_libraries(shell "")
++  link_extension_libraries(shell "")
+ 
+-if(NOT AMALGAMATION_BUILD AND NOT WIN32)
+-  target_link_libraries(shell duckdb_utf8proc)
+-endif()
++  if(NOT AMALGAMATION_BUILD AND NOT WIN32)
++    target_link_libraries(shell duckdb_utf8proc)
++  endif()
++
++  function(ensure_variable_is_number INPUT_VERSION OUT_RESULT)
++    if(NOT "${${INPUT_VERSION}}" MATCHES "^[0-9]+$")
++      message(
++        WARNING
++          "VERSION PARAMETER ${INPUT_VERSION} \"${${INPUT_VERSION}}\" IS NOT A NUMBER - SETTING TO 0"
++      )
++      set(${OUT_RESULT}
++          0
++          PARENT_SCOPE)
++    else()
++      set(${OUT_RESULT}
++          ${${INPUT_VERSION}}
++          PARENT_SCOPE)
++    endif()
++  endfunction()
+ 
+-function(ensure_variable_is_number INPUT_VERSION OUT_RESULT)
+-  if(NOT "${${INPUT_VERSION}}" MATCHES "^[0-9]+$")
+-    message(
+-      WARNING
+-        "VERSION PARAMETER ${INPUT_VERSION} \"${${INPUT_VERSION}}\" IS NOT A NUMBER - SETTING TO 0"
+-    )
+-    set(${OUT_RESULT}
+-        0
+-        PARENT_SCOPE)
+-  else()
+-    set(${OUT_RESULT}
+-        ${${INPUT_VERSION}}
+-        PARENT_SCOPE)
++  if(WIN32 AND NOT MINGW)
++    string(TIMESTAMP DUCKDB_COPYRIGHT_YEAR "%Y")
++    ensure_variable_is_number(DUCKDB_MAJOR_VERSION RC_MAJOR_VERSION)
++    ensure_variable_is_number(DUCKDB_MINOR_VERSION RC_MINOR_VERSION)
++    ensure_variable_is_number(DUCKDB_PATCH_VERSION RC_PATCH_VERSION)
++    ensure_variable_is_number(DUCKDB_DEV_ITERATION RC_DEV_ITERATION)
++
++    set(CMAKE_RC_FLAGS
++        "${CMAKE_RC_FLAGS} -D DUCKDB_VERSION=\"${DUCKDB_VERSION}\"")
++    set(CMAKE_RC_FLAGS
++        "${CMAKE_RC_FLAGS} -D DUCKDB_MAJOR_VERSION=\"${RC_MAJOR_VERSION}\"")
++    set(CMAKE_RC_FLAGS
++        "${CMAKE_RC_FLAGS} -D DUCKDB_MINOR_VERSION=\"${RC_MINOR_VERSION}\"")
++    set(CMAKE_RC_FLAGS
++        "${CMAKE_RC_FLAGS} -D DUCKDB_PATCH_VERSION=\"${RC_PATCH_VERSION}\"")
++    set(CMAKE_RC_FLAGS
++        "${CMAKE_RC_FLAGS} -D DUCKDB_DEV_ITERATION=\"${RC_DEV_ITERATION}\"")
++    set(CMAKE_RC_FLAGS
++        "${CMAKE_RC_FLAGS} -D DUCKDB_COPYRIGHT_YEAR=\"${DUCKDB_COPYRIGHT_YEAR}\"")
++    target_sources(shell PRIVATE rc/duckdb.rc)
+   endif()
+-endfunction()
+ 
+-if(WIN32 AND NOT MINGW)
+-  string(TIMESTAMP DUCKDB_COPYRIGHT_YEAR "%Y")
+-  ensure_variable_is_number(DUCKDB_MAJOR_VERSION RC_MAJOR_VERSION)
+-  ensure_variable_is_number(DUCKDB_MINOR_VERSION RC_MINOR_VERSION)
+-  ensure_variable_is_number(DUCKDB_PATCH_VERSION RC_PATCH_VERSION)
+-  ensure_variable_is_number(DUCKDB_DEV_ITERATION RC_DEV_ITERATION)
++  set_target_properties(shell PROPERTIES OUTPUT_NAME duckdb)
++  set_target_properties(shell PROPERTIES RUNTIME_OUTPUT_DIRECTORY
++                                         ${PROJECT_BINARY_DIR})
+ 
+-  set(CMAKE_RC_FLAGS
+-      "${CMAKE_RC_FLAGS} -D DUCKDB_VERSION=\"${DUCKDB_VERSION}\"")
+-  set(CMAKE_RC_FLAGS
+-      "${CMAKE_RC_FLAGS} -D DUCKDB_MAJOR_VERSION=\"${RC_MAJOR_VERSION}\"")
+-  set(CMAKE_RC_FLAGS
+-      "${CMAKE_RC_FLAGS} -D DUCKDB_MINOR_VERSION=\"${RC_MINOR_VERSION}\"")
+-  set(CMAKE_RC_FLAGS
+-      "${CMAKE_RC_FLAGS} -D DUCKDB_PATCH_VERSION=\"${RC_PATCH_VERSION}\"")
+-  set(CMAKE_RC_FLAGS
+-      "${CMAKE_RC_FLAGS} -D DUCKDB_DEV_ITERATION=\"${RC_DEV_ITERATION}\"")
+-  set(CMAKE_RC_FLAGS
+-      "${CMAKE_RC_FLAGS} -D DUCKDB_COPYRIGHT_YEAR=\"${DUCKDB_COPYRIGHT_YEAR}\"")
+-  target_sources(shell PRIVATE rc/duckdb.rc)
++  install(TARGETS shell RUNTIME DESTINATION "${INSTALL_BIN_DIR}")
+ endif()
+ 
+-set_target_properties(shell PROPERTIES OUTPUT_NAME duckdb)
+-set_target_properties(shell PROPERTIES RUNTIME_OUTPUT_DIRECTORY
+-                                       ${PROJECT_BINARY_DIR})
+-
+-install(TARGETS shell RUNTIME DESTINATION "${INSTALL_BIN_DIR}")
++# Static library: shell_lib (embeddable shell for use from Go/C/etc.)
++if(BUILD_SHELL_LIB OR BUILD_SHELL_LIB_ONLY)
++  add_library(duckdb_shell_lib STATIC shell_lib.cpp ${SHELL_SOURCES})
++  target_link_libraries(duckdb_shell_lib duckdb_static ${DUCKDB_EXTRA_LINK_FLAGS})
++  link_threads(duckdb_shell_lib "")
++  if(NOT AMALGAMATION_BUILD AND NOT WIN32)
++    target_link_libraries(duckdb_shell_lib duckdb_utf8proc)
++  endif()
++  link_extension_libraries(duckdb_shell_lib "")
++  install(TARGETS duckdb_shell_lib ARCHIVE DESTINATION "${INSTALL_LIB_DIR}")
++  install(FILES include/shell_lib.h DESTINATION "${INSTALL_INCLUDE_DIR}")
++endif()
 diff --git a/tools/shell/include/shell_lib.h b/tools/shell/include/shell_lib.h
 new file mode 100644
 index 0000000000..83cfdc1925
